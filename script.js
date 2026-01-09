@@ -38,10 +38,6 @@ document.addEventListener('DOMContentLoaded', () => {
     loadData();
     setupEventListeners();
 
-    // Initial renders
-    // Initial setup
-    // render calls moved to end
-
     // Check if we need to auto-generate data (if < 100 items for robust testing)
     if (appState.inventory.length < 100) {
         generateBulkData();
@@ -61,16 +57,20 @@ document.addEventListener('DOMContentLoaded', () => {
 function loadData() {
     const stored = localStorage.getItem('freshstock_inventory');
     if (stored) {
-        appState.inventory = JSON.parse(stored);
+        try {
+            appState.inventory = JSON.parse(stored);
 
-        // Data Migration/Cleanup
-        appState.inventory = appState.inventory.map(item => ({
-            ...item,
-            img: item.img || categoryImages[item.category] || 'https://via.placeholder.com/200?text=Product'
-        }));
+            // Data Migration/Cleanup logic if needed
+            appState.inventory = appState.inventory.map(item => ({
+                ...item,
+                img: item.img || categoryImages[item.category] || 'https://via.placeholder.com/200'
+            }));
+        } catch (e) {
+            console.error("Error parsing local storage", e);
+            appState.inventory = [];
+        }
     } else {
         appState.inventory = [];
-        generateBulkData(); // Handles saving
     }
 }
 
@@ -108,7 +108,7 @@ function saveData() {
 function setupEventListeners() {
     // Navigation
     // We attach click events to ALL nav items now
-    ['dashboard', 'inventory', 'analytics'].forEach(view => {
+    ['dashboard', 'inventory', 'analytics', 'sales-overview'].forEach(view => {
         const el = document.getElementById(`nav-${view}`);
         if (el) {
             el.addEventListener('click', (e) => switchView(e, `view-${view}`));
@@ -175,6 +175,22 @@ function setupEventListeners() {
     if (editForm) {
         editForm.addEventListener('submit', handleEditItem);
     }
+
+    // Analytics Time Range
+    const timeRangeSelect = document.getElementById('analyticsTimeRange');
+    if (timeRangeSelect) {
+        timeRangeSelect.addEventListener('change', () => {
+            renderAnalytics();
+        });
+    }
+
+    // Category Time Range
+    const catTimeRangeSelect = document.getElementById('categoryTimeRange');
+    if (catTimeRangeSelect) {
+        catTimeRangeSelect.addEventListener('change', () => {
+            renderAnalytics();
+        });
+    }
 }
 
 function switchView(e, viewId) {
@@ -189,29 +205,21 @@ function switchView(e, viewId) {
 
     // Update View visibility
     document.querySelectorAll('[id^="view-"]').forEach(el => el.classList.add('d-none'));
-
     const target = document.getElementById(viewId);
-    if (target) target.classList.remove('d-none');
+    if (target) {
+        target.classList.remove('d-none');
+        target.classList.add('fade-in');
 
-    // Refresh Logic per view
-    if (viewId === 'view-dashboard') {
-        renderDashboard();
+        if (viewId === 'view-analytics' || viewId === 'view-sales-overview') {
+            renderAnalytics();
+        }
     }
-    if (viewId === 'view-inventory') renderInventory();
-    if (viewId === 'view-analytics') renderAnalytics();
 }
 
 // Refresh App Logic
 function refreshApp() {
-    loadData();
-    renderDashboard();
-    renderInventory();
-    renderNotifications();
-    const btn = document.querySelector('.bi-arrow-clockwise');
-    if (btn) {
-        btn.classList.add('spin-anim');
-        setTimeout(() => btn.classList.remove('spin-anim'), 1000);
-    }
+    location.reload();
+    // Kept the reload behavior as requested, but now it will load from localStorage
 }
 
 function handleAddItem(e) {
@@ -228,7 +236,6 @@ function handleAddItem(e) {
     const stock = parseInt(stockInput.value);
 
     // Check if item exists (Updating Stock)
-    // Relaxed check: Only check NAME (case-insensitive) to prevent duplicates like 'potato' vs 'Potato'
     const existingItem = appState.inventory.find(item =>
         item.name.toLowerCase() === name.toLowerCase()
     );
@@ -241,7 +248,6 @@ function handleAddItem(e) {
             saveData();
             alert(`Stock updated! New stock for ${existingItem.name}: ${existingItem.stock}`);
 
-            // Clean up: If we just merged into an item, ensure no other duplicates exist (just in case)
             mergeDuplicates();
         } else {
             return;
@@ -249,7 +255,7 @@ function handleAddItem(e) {
     } else {
         const newItem = {
             id: Date.now(),
-            name, // Store as entered, or maybe capitalizeFirstLetter(name)
+            name,
             category,
             price,
             stock,
@@ -259,7 +265,6 @@ function handleAddItem(e) {
 
         appState.inventory.unshift(newItem);
         saveData();
-        // Check for duplicates again to be safe
         mergeDuplicates();
         alert('Item added successfully!');
     }
@@ -270,60 +275,43 @@ function handleAddItem(e) {
     modal.hide();
     e.target.reset();
 
-    // Re-populate suggestions in case name is new
     populateSuggestions();
-
-    // Update Views
-    refreshApp();
+    location.reload(); // Refresh to update view
 }
 
 function mergeDuplicates() {
-    const uniqueMap = new Map();
-    let duplicatesFound = false;
-
-    // We traverse the inventory. If name exists in map, we merge 'current' into 'map item'.
-    // If not, we add to map.
-    // Finally, we replace inventory with values from map.
-
-    // We want to keep the "oldest" added date usually, but maybe "newest" data.
-    // Let's iterate.
-
-    const newInventory = [];
+    const uniqueInventory = [];
+    const nameMap = new Map();
 
     appState.inventory.forEach(item => {
-        const key = item.name.toLowerCase().trim();
-        if (uniqueMap.has(key)) {
-            duplicatesFound = true;
-            const existing = uniqueMap.get(key);
-            existing.stock += item.stock; // Merge stock
-            // Keep the price of the most recently encountered item (or existing? Let's say existing to be stable, or overwrite if needed. User didn't specify. I'll stick with accumulating stock.)
-            // existing.price = item.price; // Optional: update price
+        const normalizedName = item.name.toLowerCase().trim();
+        if (nameMap.has(normalizedName)) {
+            // Merge
+            const existing = nameMap.get(normalizedName);
+            existing.stock += item.stock;
+            // Keep recent price
+            existing.price = item.price;
         } else {
-            uniqueMap.set(key, item);
+            nameMap.set(normalizedName, item);
+            uniqueInventory.push(item);
         }
     });
 
-    if (duplicatesFound) {
-        appState.inventory = Array.from(uniqueMap.values());
-        saveData();
-        console.log("Merged duplicates.");
-    }
+    appState.inventory = uniqueInventory;
+    saveData();
 }
 
 function populateSuggestions() {
-    const dataList = document.getElementById('productNameSuggestions');
+    const dataList = document.getElementById('productSuggestions');
     if (!dataList) return;
 
     dataList.innerHTML = '';
+    const uniqueNames = new Set(appState.inventory.map(i => i.name));
 
-    // Collect all existing names
-    const existingNames = new Set(appState.inventory.map(i => i.name));
+    // Also add default names
+    Object.values(productNames).flat().forEach(n => uniqueNames.add(n));
 
-    // Add some common defaults from our static lists
-    Object.values(productNames).flat().forEach(name => existingNames.add(name));
-
-    // Sort and append
-    Array.from(existingNames).sort().forEach(name => {
+    uniqueNames.forEach(name => {
         const option = document.createElement('option');
         option.value = name;
         dataList.appendChild(option);
@@ -331,17 +319,12 @@ function populateSuggestions() {
 }
 
 function getFilteredInventory() {
-    const term = appState.filters.search;
     return appState.inventory.filter(item => {
-        // Robust Search: Name, Category, or even price matching
-        const matchesSearch = term === '' ||
-            item.name.toLowerCase().includes(term) ||
-            item.category.toLowerCase().includes(term) ||
-            item.price.toString().includes(term);
+        const matchesSearch = item.name.toLowerCase().includes(appState.filters.search) ||
+            item.category.toLowerCase().includes(appState.filters.search);
 
         const matchesCategory = appState.filters.category === 'All' || item.category === appState.filters.category;
 
-        // Stock Logic
         let matchesStock = true;
         if (appState.filters.stock === 'In Stock') matchesStock = item.stock > 10;
         if (appState.filters.stock === 'Low Stock') matchesStock = item.stock > 0 && item.stock <= 10;
@@ -374,16 +357,19 @@ function renderInventory() {
         else if (item.stock <= 10) statusBadge = '<span class="badge bg-warning-subtle text-warning">Low Stock</span>';
         else statusBadge = '<span class="badge bg-success-subtle text-success">In Stock</span>';
 
+        // Fix image URL if broken or missing
+        const imgUrl = item.img || 'https://via.placeholder.com/200?text=Product';
+
         const tr = document.createElement('tr');
         tr.innerHTML = `
             <td class="ps-4">
                 <div class="d-flex align-items-center">
-                    <img src="${item.img}" class="table-img me-3" alt="${item.name}">
+                    <img src="${imgUrl}" class="table-img me-3" alt="${item.name}">
                     <span class="fw-medium">${item.name}</span>
                 </div>
             </td>
             <td>${item.category}</td>
-            <td>$${item.price.toFixed(2)}</td>
+            <td>₹${item.price.toFixed(2)}</td>
             <td>${item.stock}</td>
             <td>${statusBadge}</td>
             <td class="text-end pe-4">
@@ -447,45 +433,14 @@ function deleteItem(id) {
     }
 }
 
-// Notifications Logic
-function renderNotifications() {
-    const list = document.getElementById('notification-list');
-    const badge = document.getElementById('notif-badge');
-    if (!list || !badge) return;
-
-    const lowStockItems = appState.inventory.filter(i => i.stock <= 10);
-    list.innerHTML = '';
-
-    if (lowStockItems.length === 0) {
-        badge.classList.add('d-none');
-        list.innerHTML = '<li class="p-4 text-center text-muted small">No new notifications</li>';
-    } else {
-        badge.classList.remove('d-none');
-        lowStockItems.forEach(item => {
-            const isOut = item.stock === 0;
-            const li = document.createElement('li');
-            li.className = 'list-group-item border-0 border-bottom p-3 bg-transparent';
-            li.innerHTML = `
-                <div class="d-flex align-items-start">
-                    <div class="text-${isOut ? 'danger' : 'warning'} me-3 fs-4"><i class="bi bi-exclamation-circle-fill"></i></div>
-                    <div>
-                        <h6 class="mb-1 small fw-bold">${item.name}</h6>
-                        <p class="mb-0 small text-muted">${isOut ? 'Out of stock!' : `Only ${item.stock} remaining.`}</p>
-                    </div>
-                </div>
-            `;
-            list.appendChild(li);
-        });
-    }
-}
-
 // Analytics Logic
 function renderAnalytics() {
     const ctxSales = document.getElementById('salesChart');
     const ctxCat = document.getElementById('categoryChart');
 
     // Only render if elements exist and are visible (simple check)
-    if (!ctxSales || !ctxCat) return;
+    // Only render if needed. Since we split views, we might render them independently.
+    // However, the original code relied on both existing. We will now check independently.
 
     // Prepare Data
     // 1. Category Distribution
@@ -494,78 +449,205 @@ function renderAnalytics() {
         catCounts[i.category] = (catCounts[i.category] || 0) + i.stock;
     });
 
-    // 2. Mock Sales Data (since we don't have historical transaction db yet)
-    // We'll just make some up based on inventory value
-    const salesLabels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'];
-    const salesData = salesLabels.map(() => Math.floor(Math.random() * 5000) + 2000);
+    // 2. Sales Data based on Time Range
+    const timeRangeEl = document.getElementById('analyticsTimeRange');
+    const rangeSales = timeRangeEl ? timeRangeEl.value : '15days';
+    const { labels, data } = getChartData(rangeSales);
 
-    // Destroy old instances
-    if (salesChartInstance) salesChartInstance.destroy();
-    if (categoryChartInstance) categoryChartInstance.destroy();
+    // 3. Category Data based on Time Range
+    const catTimeRangeEl = document.getElementById('categoryTimeRange');
+    const rangeCategory = catTimeRangeEl ? catTimeRangeEl.value : '15days';
+    const { categorySales } = getChartData(rangeCategory);
 
     // Sales Chart
-    salesChartInstance = new Chart(ctxSales, {
-        type: 'line',
-        data: {
-            labels: salesLabels,
-            datasets: [{
-                label: 'Monthly Sales ($)',
-                data: salesData,
-                borderColor: '#11998e',
-                backgroundColor: 'rgba(17, 153, 142, 0.1)',
-                tension: 0.4,
-                fill: true
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: { legend: { display: false } },
-            scales: {
-                y: { beginAtZero: true, grid: { borderDash: [2, 4], color: '#f0f0f0' } },
-                x: { grid: { display: false } }
+    if (ctxSales) {
+        if (salesChartInstance) salesChartInstance.destroy();
+        salesChartInstance = new Chart(ctxSales, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Sales (₹)',
+                    data: data,
+                    borderColor: '#11998e',
+                    backgroundColor: 'rgba(17, 153, 142, 0.1)',
+                    tension: 0.4,
+                    fill: true,
+                    pointRadius: labels.length > 30 ? 2 : 4,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: function (context) {
+                                let label = context.dataset.label || '';
+                                if (label) {
+                                    label += ': ';
+                                }
+                                if (context.parsed.y !== null) {
+                                    label += new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(context.parsed.y);
+                                }
+                                return label;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        grid: { borderDash: [2, 4], color: '#f0f0f0' },
+                        ticks: {
+                            callback: function (value, index, values) {
+                                return '₹' + value;
+                            }
+                        }
+                    },
+                    x: {
+                        grid: { display: false },
+                        ticks: {
+                            maxTicksLimit: 10
+                        }
+                    }
+                }
             }
-        }
+        });
+    }
+
+    // Category Chart - Top Selling
+    if (ctxCat) {
+        if (categoryChartInstance) categoryChartInstance.destroy();
+        categoryChartInstance = new Chart(ctxCat, {
+            type: 'bar',
+            data: {
+                labels: Object.keys(categorySales),
+                datasets: [{
+                    label: 'Total Sales (₹)',
+                    data: Object.values(categorySales),
+                    backgroundColor: ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF'],
+                    borderRadius: 4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                indexAxis: 'y', // Horizontal bars
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: function (context) {
+                                let label = context.dataset.label || '';
+                                if (label) {
+                                    label += ': ';
+                                }
+                                if (context.parsed.x !== null) {
+                                    label += new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(context.parsed.x);
+                                }
+                                return label;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: { display: false },
+                    y: { grid: { display: false } }
+                }
+            }
+        });
+    }
+}
+
+function getChartData(range) {
+    let labels = [];
+    let data = [];
+    const today = new Date();
+
+    // Mock Category Sales Data
+    // Base it on existing categories but randomized magnitude based on range
+    const categories = ['Fruits', 'Vegetables', 'Dairy', 'Snacks', 'Beverages'];
+    const categorySales = {};
+
+    // Multiplier based on range length (approx days)
+    let multiplier = 1;
+    if (range === '7days') multiplier = 7;
+    if (range === '15days') multiplier = 15;
+    if (range === '30days') multiplier = 30;
+    if (range === '6months') multiplier = 180;
+    if (range === '1year') multiplier = 365;
+
+    categories.forEach(cat => {
+        // Random sales between $50 and $200 per day avg
+        categorySales[cat] = Math.floor(Math.random() * 150 * multiplier) + (50 * multiplier);
     });
 
-    // Category Chart
-    categoryChartInstance = new Chart(ctxCat, {
-        type: 'doughnut',
-        data: {
-            labels: Object.keys(catCounts),
-            datasets: [{
-                data: Object.values(catCounts),
-                backgroundColor: ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF'],
-                borderWidth: 0
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            cutout: '70%',
-            plugins: { legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 8 } } }
+    // Helper to format date
+    const formatDate = (date) => {
+        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    };
+
+    const formatMonth = (date) => {
+        return date.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
+    };
+
+    if (range === '7days') {
+        for (let i = 6; i >= 0; i--) {
+            const d = new Date();
+            d.setDate(today.getDate() - i);
+            labels.push(formatDate(d));
+            data.push(Math.floor(Math.random() * 2000) + 500);
         }
-    });
+    } else if (range === '15days') {
+        for (let i = 14; i >= 0; i--) {
+            const d = new Date();
+            d.setDate(today.getDate() - i);
+            labels.push(formatDate(d));
+            data.push(Math.floor(Math.random() * 2500) + 800);
+        }
+    } else if (range === '30days') {
+        for (let i = 29; i >= 0; i--) {
+            const d = new Date();
+            d.setDate(today.getDate() - i);
+            labels.push(formatDate(d));
+            data.push(Math.floor(Math.random() * 3000) + 1000);
+        }
+    } else if (range === '6months') {
+        for (let i = 5; i >= 0; i--) {
+            const d = new Date();
+            d.setMonth(today.getMonth() - i);
+            labels.push(formatMonth(d));
+            data.push(Math.floor(Math.random() * 15000) + 5000);
+        }
+    } else if (range === '1year') {
+        for (let i = 11; i >= 0; i--) {
+            const d = new Date();
+            d.setMonth(today.getMonth() - i);
+            labels.push(formatMonth(d));
+            data.push(Math.floor(Math.random() * 18000) + 7000);
+        }
+    }
+
+    return { labels, data, categorySales };
 }
 
 function renderDashboard() {
-    // Calculate Stats from actual inventory
     const totalProducts = appState.inventory.length;
-    const totalValue = appState.inventory.reduce((acc, item) => acc + (item.price * item.stock), 0);
-    const lowStock = appState.inventory.filter(item => item.stock <= 10 && item.stock > 0).length;
+    const totalValue = appState.inventory.reduce((sum, item) => sum + (item.price * item.stock), 0);
+    const lowStock = appState.inventory.filter(item => item.stock > 0 && item.stock <= 10).length;
+    // Categories count is hardcoded to 5 main categories usually, or count unique
+    const categoriesCount = new Set(appState.inventory.map(i => i.category)).size;
 
-    // Calculate unique categories
-    const uniqueCategories = new Set(appState.inventory.map(item => item.category));
-    const categoriesCount = uniqueCategories.size;
-
-    // Update Total Products counter
-    const totalProductsEl = document.querySelector('[data-target="1240"]');
-    if (totalProductsEl) {
-        totalProductsEl.setAttribute('data-target', totalProducts);
-        totalProductsEl.textContent = totalProducts.toLocaleString();
+    // Update DOM
+    const totalProdEl = document.querySelector('[data-target="1240"]');
+    if (totalProdEl) {
+        // Update data-target for animation (optional) or just text
+        totalProdEl.setAttribute('data-target', totalProducts);
+        totalProdEl.textContent = totalProducts.toLocaleString();
     }
 
-    // Update Total Value counter
     const totalValueEl = document.querySelector('[data-target="45230"]');
     if (totalValueEl) {
         const roundedValue = Math.round(totalValue);
@@ -606,7 +688,7 @@ function renderDashboard() {
                 </div>
             </td>
             <td><span class="${statusColor}"><i class="bi ${statusIcon} me-1"></i> ${item.stock > 0 ? 'Restocked' : 'Out'}</span></td>
-            <td class="fw-bold">$${(item.price * 10).toFixed(2)}</td>
+            <td class="fw-bold">₹${(item.price * 10).toFixed(2)}</td>
             <td class="text-muted small">${item.added}</td>
             <td class="text-end"><button class="btn btn-sm btn-link text-muted"><i class="bi bi-three-dots-vertical"></i></button></td>
         `;
@@ -627,7 +709,7 @@ function renderTransactionHistory() {
         tr.innerHTML = `
             <td>${item.name} <small class="text-muted d-block">${item.category}</small></td>
             <td><span class="badge ${item.stock > 0 ? 'bg-success-subtle text-success' : 'bg-danger-subtle text-danger'}">${item.stock > 0 ? 'In Stock' : 'Out'}</span></td>
-            <td>$${item.price.toFixed(2)}</td>
+            <td>₹${item.price.toFixed(2)}</td>
             <td>${item.added}</td>
         `;
         tbody.appendChild(tr);
@@ -654,6 +736,62 @@ function generateReport() {
     document.body.removeChild(link);
 }
 
+function generateAnalyticsReport() {
+    // Generate CSV using the current chart data logic (proxy for backend report)
+    const timeRangeEl = document.getElementById('analyticsTimeRange');
+    const range = timeRangeEl ? timeRangeEl.value : '15days';
+
+    const { labels, data, categorySales } = getChartData(range);
+
+    let csvContent = "data:text/csv;charset=utf-8,";
+
+    // Header
+    csvContent += `Analytics Report - Time Range: ${range}\n\n`;
+    csvContent += "Date,Sales Amount (₹)\n";
+
+    // Sales Data
+    labels.forEach((label, index) => {
+        csvContent += `"${label}",${data[index]}\n`;
+    });
+
+    csvContent += "\nCategory Performance\n";
+    csvContent += "Category,Sales (₹)\n";
+    Object.keys(categorySales).forEach(cat => {
+        csvContent += `"${cat}",${categorySales[cat]}\n`;
+    });
+
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `analytics_report_${range}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+function generateCategoryReport() {
+    const timeRangeEl = document.getElementById('categoryTimeRange');
+    const range = timeRangeEl ? timeRangeEl.value : '15days';
+
+    const { categorySales } = getChartData(range);
+
+    let csvContent = "data:text/csv;charset=utf-8,";
+    csvContent += `Category Performance Report - Time Range: ${range}\n\n`;
+    csvContent += "Category,Sales (₹)\n";
+
+    Object.keys(categorySales).forEach(cat => {
+        csvContent += `"${cat}",${categorySales[cat]}\n`;
+    });
+
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `category_report_${range}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
 function animateCounters() {
     // Basic counter animation
     const counters = document.querySelectorAll('.count-up');
@@ -665,35 +803,67 @@ function animateCounters() {
         let count = 0;
         const inc = target / 30;
 
-        const updateCount = () => {
-            if (count < target) {
-                count += inc;
-                counter.innerText = Math.ceil(count).toLocaleString();
-                requestAnimationFrame(updateCount);
+        // Use a simple timer
+        const timer = setInterval(() => {
+            count += inc;
+            if (count >= target) {
+                counter.textContent = target.toLocaleString();
+                clearInterval(timer);
             } else {
-                counter.innerText = target.toLocaleString();
+                counter.textContent = Math.ceil(count).toLocaleString();
             }
-        };
-        updateCount();
+        }, 30);
     });
 }
 
-// Edit Item Functions
+function renderNotifications() {
+    // Mock notifications
+    const list = document.getElementById('notification-list');
+    const badge = document.getElementById('notif-badge');
+    if (!list) return;
+
+    list.innerHTML = '';
+    let alertCount = 0;
+
+    appState.inventory.forEach(item => {
+        if (item.stock <= 10) {
+            alertCount++;
+            const status = item.stock === 0 ? 'Out of Stock' : 'Low Stock';
+            const color = item.stock === 0 ? 'danger' : 'warning';
+
+            const itemHtml = `
+            <li class="p-3 border-bottom bg-opacity-10 bg-${color}">
+                <div class="d-flex justify-content-between">
+                    <strong>${item.name}</strong>
+                    <span class="badge bg-${color}">${status}</span>
+                </div>
+                <small class="text-muted">Stock: ${item.stock}</small>
+            </li>
+            `;
+            list.innerHTML += itemHtml;
+        }
+    });
+
+    if (alertCount === 0) {
+        list.innerHTML = `<li class="p-4 text-center text-muted small">No new notifications</li>`;
+        if (badge) badge.classList.add('d-none');
+    } else {
+        if (badge) {
+            badge.classList.remove('d-none');
+            // badge.textContent = alertCount; // Dots style
+        }
+    }
+}
+
 function editItem(id) {
     const item = appState.inventory.find(i => i.id === id);
-    if (!item) {
-        alert('Item not found!');
-        return;
-    }
+    if (!item) return;
 
-    // Populate the edit form
     document.getElementById('editItemId').value = item.id;
-    document.getElementById('editProductName').value = item.name;
     document.getElementById('editProductCategory').value = item.category;
     document.getElementById('editProductPrice').value = item.price;
     document.getElementById('editProductStock').value = item.stock;
 
-    // Show the modal
     const modal = new bootstrap.Modal(document.getElementById('editItemModal'));
     modal.show();
 }
@@ -739,7 +909,8 @@ function handleEditItem(e) {
 }
 
 // Global Exports
+window.refreshApp = refreshApp;
 window.editItem = editItem;
 window.deleteItem = deleteItem;
-window.refreshApp = refreshApp;
 window.generateReport = generateReport;
+window.generateAnalyticsReport = generateAnalyticsReport;

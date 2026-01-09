@@ -7,6 +7,7 @@ set "PY_PATH=%LocalAppData%\Programs\Python\Python312\python.exe"
 
 if exist "%PY_PATH%" (
     echo Python found at: %PY_PATH%
+    echo Python found at: %PY_PATH%
     "%PY_PATH%" server.py
     pause
     exit /b
