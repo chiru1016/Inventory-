@@ -1,4 +1,4 @@
-@echo o
+@echo 
 TITLE Auto-Setup Python Server
 echo ==========================================
 echo        AUTO-INSTALLING PYTHON
