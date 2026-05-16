@@ -82,7 +82,6 @@ h6 {
     width: 100%;
 }
 
-/* Custom Components */
 .text-primary-accent {
     color: var(--primary-gradient-end);
 }
