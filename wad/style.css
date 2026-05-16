@@ -101,7 +101,7 @@ h6 {
 .btn-primary-gradient:hover {
     box-shadow: 0 5px 15px rgba(56, 239, 125, 0.4);
     background: linear-gradient(135deg, var(--primary-gradient-end), var(--primary-gradient-start));
-    /* flip gradient */
+  
     color: #fff !important;
     transform: translateY(-1px);
 }
